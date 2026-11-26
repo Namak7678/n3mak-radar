@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-N3mak Radar — Trilingual Telegram Publisher (AR / EN / RU)
-Reads the latest exposure-index dataset and posts a daily brief to Telegram.
+N3mak Radar — Trilingual Publisher (Telegram + Discord, AR / EN / RU)
+Reads the latest exposure-index dataset and posts a daily brief to:
+  - Telegram channels (bot must be admin with 'post messages' permission)
+  - Discord channels (via incoming webhook URLs)
 
-Language routing (via CHAT_* env vars / secrets):
-  AR -> primary community channel
-  EN -> international channel
-  RU -> Russian-speaking channel
-Only languages with a configured chat_id are posted. Configure the bot as
-admin with 'post messages' permission in each target channel.
+Language routing (env vars / repo secrets):
+  Telegram: N3MAK_CHAT_AR / N3MAK_CHAT_EN / N3MAK_CHAT_RU
+  Discord:  N3MAK_DISCORD_WEBHOOK_AR / N3MAK_DISCORD_WEBHOOK_EN / N3MAK_DISCORD_WEBHOOK_RU
+Only targets with a configured value are posted.
 
 Data source: n3mak-exposure-index/data/latest.json (same owner, public repo).
 This script only republishes metadata already published by leak groups.
@@ -28,13 +28,16 @@ BOT_TOKEN = os.environ.get("N3MAK_BOT_TOKEN", "")
 CHAT_AR = os.environ.get("N3MAK_CHAT_AR", "")
 CHAT_EN = os.environ.get("N3MAK_CHAT_EN", "")
 CHAT_RU = os.environ.get("N3MAK_CHAT_RU", "")
+DISCORD_AR = os.environ.get("N3MAK_DISCORD_WEBHOOK_AR", "")
+DISCORD_EN = os.environ.get("N3MAK_DISCORD_WEBHOOK_EN", "")
+DISCORD_RU = os.environ.get("N3MAK_DISCORD_WEBHOOK_RU", "")
 
 RADAR_URL = "https://namak7678.github.io/n3mak-radar/"
 BOT_URL = "https://t.me/N3mak_bot"
 
 
 def http_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "n3mak-publisher/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "n3mak-publisher/1.1"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -47,15 +50,29 @@ def post_to_telegram(chat_id: str, text: str) -> None:
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         result = json.loads(resp.read().decode("utf-8"))
         if not result.get("ok"):
             raise RuntimeError("Telegram API rejected the message: %s" % result)
+
+
+def html_to_markdown(text: str) -> str:
+    """Convert the Telegram HTML brief to Discord-friendly markdown."""
+    text = text.replace("<b>", "**").replace("</b>", "**")
+    text = text.replace("<i>", "_").replace("</i>", "_")
+    return text
+
+
+def post_to_discord(webhook_url: str, text: str) -> None:
+    content = html_to_markdown(text)
+    if len(content) > 1900:  # Discord hard limit is 2000
+        content = content[:1900]
+    payload = json.dumps({"content": content}).encode("utf-8")
+    req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        if resp.status not in (200, 204):
+            raise RuntimeError("Discord webhook rejected the message: HTTP %s" % resp.status)
 
 
 def top_countries(data: dict, limit: int = 5) -> list:
@@ -74,9 +91,7 @@ def fmt_updated(iso: str) -> str:
 
 def build_brief_ar(data: dict) -> str:
     top = top_countries(data)
-    top_line = " \u00b7 ".join(
-        "%s (%d)" % (c["country"], c["victims"]) for c in top
-    )
+    top_line = " \u00b7 ".join("%s (%d)" % (c["country"], c["victims"]) for c in top)
     return (
         "\U0001F4E1 <b>\u0646\u0639\u0645\u0643 | \u0645\u0648\u062C\u0632 \u0627\u0644\u0631\u0627\u062F\u0627\u0631 \u2014 %s</b>\n\n"
         "\u0625\u062C\u0645\u0627\u0644\u064A \u0627\u0644\u0625\u0634\u0627\u0631\u0627\u062A \u0627\u0644\u0645\u0646\u0634\u0648\u0631\u0629: <b>%d</b>\n"
@@ -89,9 +104,7 @@ def build_brief_ar(data: dict) -> str:
 
 def build_brief_en(data: dict) -> str:
     top = top_countries(data)
-    top_line = " \u00b7 ".join(
-        "%s (%d)" % (c["country"], c["victims"]) for c in top
-    )
+    top_line = " \u00b7 ".join("%s (%d)" % (c["country"], c["victims"]) for c in top)
     return (
         "\U0001F4E1 <b>N3mak Radar | Daily Brief \u2014 %s</b>\n\n"
         "Total published signals: <b>%d</b>\n"
@@ -104,9 +117,7 @@ def build_brief_en(data: dict) -> str:
 
 def build_brief_ru(data: dict) -> str:
     top = top_countries(data)
-    top_line = " \u00b7 ".join(
-        "%s (%d)" % (c["country"], c["victims"]) for c in top
-    )
+    top_line = " \u00b7 ".join("%s (%d)" % (c["country"], c["victims"]) for c in top)
     return (
         "\U0001F4E1 <b>N3mak Radar | \u0415\u0436\u0435\u0434\u043D\u0435\u0432\u043D\u0430\u044F \u0441\u0432\u043E\u0434\u043A\u0430 \u2014 %s</b>\n\n"
         "\u0412\u0441\u0435\u0433\u043E \u043E\u043F\u0443\u0431\u043B\u0438\u043A\u043E\u0432\u0430\u043D\u043D\u044B\u0445 \u0441\u0438\u0433\u043D\u0430\u043B\u043E\u0432: <b>%d</b>\n"
@@ -118,34 +129,43 @@ def build_brief_ru(data: dict) -> str:
 
 
 def main() -> int:
-    if not BOT_TOKEN:
-        print("ERROR: N3MAK_BOT_TOKEN is not configured.", file=sys.stderr)
-        return 1
-
     data = http_json(DATA_URL)
 
-    targets = [
-        (CHAT_AR, build_brief_ar(data), "AR"),
-        (CHAT_EN, build_brief_en(data), "EN"),
-        (CHAT_RU, build_brief_ru(data), "RU"),
+    briefs = {
+        "AR": build_brief_ar(data),
+        "EN": build_brief_en(data),
+        "RU": build_brief_ru(data),
+    }
+
+    targets = []
+    if BOT_TOKEN:
+        targets += [
+            ("telegram", CHAT_AR, "AR"), ("telegram", CHAT_EN, "EN"), ("telegram", CHAT_RU, "RU"),
+        ]
+    else:
+        print("NOTE: N3MAK_BOT_TOKEN not set; Telegram targets skipped.")
+    targets += [
+        ("discord", DISCORD_AR, "AR"), ("discord", DISCORD_EN, "EN"), ("discord", DISCORD_RU, "RU"),
     ]
 
-    posted = 0
-    failures = []
-    for chat_id, text, lang in targets:
-        if not chat_id:
-            print("SKIP %s: no chat_id configured." % lang)
+    posted, failures = 0, []
+    for kind, target, lang in targets:
+        if not target:
+            print("SKIP %s/%s: not configured." % (kind, lang))
             continue
         try:
-            post_to_telegram(chat_id, text)
+            if kind == "telegram":
+                post_to_telegram(target, briefs[lang])
+            else:
+                post_to_discord(target, briefs[lang])
             posted += 1
-            print("POSTED %s -> %s" % (lang, chat_id))
+            print("POSTED %s -> %s" % (lang, kind))
         except Exception as exc:  # noqa: BLE001
-            failures.append((lang, str(exc)))
-            print("FAILED %s: %s" % (lang, exc), file=sys.stderr)
+            failures.append(("%s/%s" % (kind, lang), str(exc)))
+            print("FAILED %s/%s: %s" % (kind, lang, exc), file=sys.stderr)
 
     if posted == 0 and not failures:
-        print("No channels configured; nothing posted.")
+        print("No targets configured; nothing posted.")
         return 0
     if failures:
         print("Failures: %s" % failures, file=sys.stderr)
